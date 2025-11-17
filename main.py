@@ -1,8 +1,14 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
+from bson import ObjectId
 
-app = FastAPI()
+from database import db, create_document, get_documents
+from schemas import Cheater
+
+app = FastAPI(title="Cheaterstats API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,11 +20,53 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
+    return {
+        "name": "Cheaterstats API",
+        "message": "Cheaterstats backend is running",
+        "endpoints": [
+            {"GET": "/api/cheaters?discord_id=..."},
+            {"POST": "/api/cheaters"},
+            {"GET": "/test"},
+        ],
+    }
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+class CheaterCreate(BaseModel):
+    discord_id: str
+    username: Optional[str] = None
+    reason: Optional[str] = None
+    evidence_url: Optional[str] = None
+    flagged_by: Optional[str] = None
+    status: Optional[str] = "flagged"
+
+@app.get("/api/cheaters")
+def query_cheaters(discord_id: Optional[str] = None, username: Optional[str] = None, status: Optional[str] = None):
+    """Query cheaters by discord_id, username, or status"""
+    filters = {}
+    if discord_id:
+        filters["discord_id"] = discord_id
+    if username:
+        filters["username"] = username
+    if status:
+        filters["status"] = status
+
+    try:
+        results = get_documents("cheater", filters)
+        # Normalize ObjectId to string
+        for r in results:
+            r["_id"] = str(r.get("_id"))
+        return {"count": len(results), "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/cheaters")
+def create_cheater(payload: CheaterCreate):
+    """Create a new cheater record"""
+    try:
+        cheater = Cheater(**payload.model_dump())
+        inserted_id = create_document("cheater", cheater)
+        return {"inserted_id": inserted_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/test")
 def test_database():
@@ -33,7 +81,6 @@ def test_database():
     }
     
     try:
-        # Try to import database module
         from database import db
         
         if db is not None:
@@ -42,10 +89,9 @@ def test_database():
             response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
             response["connection_status"] = "Connected"
             
-            # Try to list collections to verify connectivity
             try:
                 collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
+                response["collections"] = collections[:10]
                 response["database"] = "✅ Connected & Working"
             except Exception as e:
                 response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
@@ -57,13 +103,11 @@ def test_database():
     except Exception as e:
         response["database"] = f"❌ Error: {str(e)[:50]}"
     
-    # Check environment variables
     import os
     response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
     response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
     
     return response
-
 
 if __name__ == "__main__":
     import uvicorn
